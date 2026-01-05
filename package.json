@@ -1,0 +1,25 @@
+{
+  "name": "emergent-builder",
+  "version": "0.1.0",
+  "description": "Autonomous product development loop using Claude Code and Sprites",
+  "type": "module",
+  "main": "dist/coordinator.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/coordinator.js",
+    "dev": "tsx coordinator.ts",
+    "dev:watch": "tsx watch coordinator.ts",
+    "simple": "tsx simple-runner.ts"
+  },
+  "dependencies": {
+    "@fly/sprites": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
