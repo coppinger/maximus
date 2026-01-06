@@ -9,13 +9,21 @@
     "start": "node dist/coordinator.js",
     "dev": "tsx coordinator.ts",
     "dev:watch": "tsx watch coordinator.ts",
-    "simple": "tsx simple-runner.ts"
+    "simple": "tsx simple-runner.ts",
+    "merge": "tsx merge-branches.ts",
+    "merge:smart": "tsx merge-branches-smart.ts",
+    "dashboard": "tsx dashboard/dashboard-server.ts"
   },
   "dependencies": {
-    "@fly/sprites": "^0.1.0"
+    "@anthropic-ai/sdk": "^0.71.2",
+    "@fly/sprites": "^0.0.1",
+    "dotenv": "^17.2.3",
+    "ws": "^8.18.0",
+    "chokidar": "^4.0.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.12",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   },

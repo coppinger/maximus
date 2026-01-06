@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maximus Dashboard</title>
+    <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-content">
+                <h1>🤖 Maximus Dashboard</h1>
+                <div class="connection-status">
+                    <span id="connection-indicator" class="indicator"></span>
+                    <span id="connection-status">Connecting...</span>
+                </div>
+            </div>
+        </header>
+
+        <section class="stats-section">
+            <div class="stat-card iteration-card">
+                <div class="stat-label">Current Iteration</div>
+                <div class="stat-value" id="iteration">0</div>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-label">Pending</div>
+                <div class="stat-value stat-pending" id="pending">0</div>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-label">In Progress</div>
+                <div class="stat-value stat-in-progress" id="in-progress">0</div>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-label">Completed</div>
+                <div class="stat-value stat-completed" id="completed">0</div>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-label">Failed</div>
+                <div class="stat-value stat-failed" id="failed">0</div>
+            </div>
+        </section>
+
+        <section class="progress-section">
+            <div class="progress-header">
+                <div class="progress-label">Overall Progress</div>
+                <div class="progress-percentage" id="progress-percentage">0%</div>
+            </div>
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progress-bar"></div>
+            </div>
+        </section>
+
+        <section class="jobs-section">
+            <div class="jobs-header">
+                <h2>Job Status</h2>
+                <div class="last-update">
+                    Last updated: <span id="last-update">--:--:--</span>
+                </div>
+            </div>
+
+            <div class="jobs-grid">
+                <div class="jobs-column">
+                    <h3 class="column-header pending-header">
+                        <span class="column-icon">⏳</span>
+                        Pending
+                        <span class="column-count" id="pending-count">0</span>
+                    </h3>
+                    <div class="jobs-list" id="pending-list"></div>
+                </div>
+
+                <div class="jobs-column">
+                    <h3 class="column-header in-progress-header">
+                        <span class="column-icon">⚙️</span>
+                        In Progress
+                        <span class="column-count" id="in-progress-count">0</span>
+                    </h3>
+                    <div class="jobs-list" id="in-progress-list"></div>
+                </div>
+
+                <div class="jobs-column">
+                    <h3 class="column-header completed-header">
+                        <span class="column-icon">✅</span>
+                        Completed
+                        <span class="column-count" id="completed-count">0</span>
+                    </h3>
+                    <div class="jobs-list" id="completed-list"></div>
+                </div>
+
+                <div class="jobs-column">
+                    <h3 class="column-header failed-header">
+                        <span class="column-icon">❌</span>
+                        Failed
+                        <span class="column-count" id="failed-count">0</span>
+                    </h3>
+                    <div class="jobs-list" id="failed-list"></div>
+                </div>
+            </div>
+        </section>
+
+        <footer class="footer">
+            <p>Maximus - Autonomous Product Development System</p>
+        </footer>
+    </div>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>

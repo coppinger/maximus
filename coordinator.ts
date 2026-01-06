@@ -2,13 +2,19 @@ import { SpritesClient, Sprite } from "@fly/sprites";
 import { execSync, spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
+import Anthropic from "@anthropic-ai/sdk";
+import { config } from "dotenv";
+import { coordinatorEvents } from "./dashboard/coordinator-events.js";
+
+// Load environment variables from .env file
+config();
 
 // Configuration
 const CONFIG = {
-  maxWorkers: 4,
+  maxWorkers: 2, // Reduced from 4 to avoid overwhelming WebSocket connections
   maxIterations: 10,
   jobsDir: "./orchestration/jobs",
-  repoUrl: process.env.REPO_URL || "",
+  repoUrl: process.env.REPO_URL || "https://github.com/coppinger/test-web-app.git",
   repoBranch: process.env.REPO_BRANCH || "main",
   projectPath: process.env.PROJECT_PATH || "/home/sprite/project",
   coordinatorPromptPath: "./orchestration/COORDINATOR_PROMPT.md",
@@ -37,6 +43,7 @@ interface IterationResult {
 
 class EmergentBuilder {
   private client: SpritesClient;
+  private anthropic: Anthropic;
   private coordinatorSprite: Sprite | null = null;
   private iteration = 0;
   private results: IterationResult[] = [];
@@ -45,6 +52,10 @@ class EmergentBuilder {
     const token = process.env.SPRITE_TOKEN;
     if (!token) throw new Error("SPRITE_TOKEN environment variable required");
     this.client = new SpritesClient(token);
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error("ANTHROPIC_API_KEY environment variable required");
+    this.anthropic = new Anthropic({ apiKey });
   }
 
   async initialize() {
@@ -56,27 +67,27 @@ class EmergentBuilder {
     fs.mkdirSync(`${CONFIG.jobsDir}/completed`, { recursive: true });
     fs.mkdirSync(`${CONFIG.jobsDir}/failed`, { recursive: true });
 
-    // Create coordinator Sprite
+    // Create coordinator Sprite with unique name
     console.log("📦 Creating coordinator Sprite...");
-    this.coordinatorSprite = await this.client.createSprite("coordinator");
+    const coordinatorName = `coordinator-${Date.now()}`;
+    this.coordinatorSprite = await this.client.createSprite(coordinatorName);
 
     // Clone the repo into the coordinator
     if (CONFIG.repoUrl) {
       console.log("📥 Cloning repository...");
+      const ghToken = process.env.GITHUB_TOKEN;
+      const repoUrl = ghToken
+        ? CONFIG.repoUrl.replace("https://", `https://x-access-token:${ghToken}@`)
+        : CONFIG.repoUrl;
+
       await this.coordinatorSprite.execFile("git", [
         "clone",
         "--branch",
         CONFIG.repoBranch,
-        CONFIG.repoUrl,
+        repoUrl,
         CONFIG.projectPath,
       ]);
     }
-
-    // Install Claude Code CLI if not present
-    await this.coordinatorSprite.execFile("bash", [
-      "-c",
-      "which claude || npm install -g @anthropic-ai/claude-code",
-    ]);
 
     console.log("✅ Coordinator initialized");
   }
@@ -86,6 +97,7 @@ class EmergentBuilder {
 
     console.log(`\n🔍 Running analysis (iteration ${this.iteration + 1})...`);
 
+    // Read configuration files locally
     const coordinatorPrompt = fs.readFileSync(
       CONFIG.coordinatorPromptPath,
       "utf-8"
@@ -97,8 +109,12 @@ class EmergentBuilder {
       ? fs.readFileSync(CONFIG.productStatePath, "utf-8")
       : "No previous state. This is the first iteration.";
 
-    const analysisPrompt = `
-${coordinatorPrompt}
+    // Read codebase files from the Sprite
+    console.log("📖 Reading codebase files...");
+    const codebaseFiles = await this.readCodebaseFromSprite();
+
+    // Build the analysis prompt
+    const systemPrompt = `${coordinatorPrompt}
 
 ## Product Vision
 ${productVision}
@@ -106,77 +122,118 @@ ${productVision}
 ## Current Product State
 ${productState}
 
-## Your Task
-Analyze the current state of the project at ${CONFIG.projectPath} and generate job files for improvements.
+## Instructions
+Analyze the codebase provided below and generate 4-8 job specifications for improvements.
+Output ONLY a valid JSON array of jobs, with no other text before or after.
 
-1. If Browserbase MCP is available, use it to view the running application
-2. Otherwise, analyze the codebase directly
-3. Generate 4-8 job files as JSON, one per improvement
-4. Output ONLY valid JSON array of jobs, no other text
+Each job must follow this schema:
+{
+  "id": "job-XXX",
+  "title": "Concise title (max 60 chars)",
+  "description": "Detailed description of what needs to change and why",
+  "priority": "critical" | "high" | "medium" | "low",
+  "estimatedComplexity": "trivial" | "small" | "medium" | "large",
+  "files": ["path/to/file.ext"],
+  "acceptanceCriteria": ["Criterion 1", "Criterion 2"]
+}`;
 
-Output format:
-[
-  {
-    "id": "job-001",
-    "title": "Short title",
-    "description": "What needs to be done",
-    "priority": "high",
-    "estimatedComplexity": "small",
-    "files": ["src/file1.tsx", "src/file2.tsx"],
-    "acceptanceCriteria": ["Criterion 1", "Criterion 2"]
-  }
-]
-`;
+    const userMessage = `Here is the current codebase:
 
-    // Write the prompt to a temp file
-    await this.coordinatorSprite.execFile("bash", [
-      "-c",
-      `cat > /tmp/analysis-prompt.md << 'PROMPT_EOF'
-${analysisPrompt}
-PROMPT_EOF`,
-    ]);
+${codebaseFiles}
 
-    // Run Claude Code for analysis
-    const cmd = this.coordinatorSprite.spawn(
-      "claude",
-      [
-        "-p",
-        analysisPrompt,
-        "--output-format",
-        "text",
-        "--max-turns",
-        "10",
-      ],
-      { cwd: CONFIG.projectPath }
-    );
-
-    let output = "";
-    cmd.stdout.on("data", (chunk: Buffer) => {
-      const text = chunk.toString();
-      output += text;
-      process.stdout.write(text);
-    });
-    cmd.stderr.on("data", (chunk: Buffer) => {
-      process.stderr.write(chunk);
-    });
-
-    await cmd.wait();
-
-    // Parse jobs from output
-    const jsonMatch = output.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      console.error("❌ Failed to parse jobs from analysis output");
-      return [];
-    }
+Generate job specifications for improvements based on the product vision and success criteria.`;
 
     try {
+      console.log("🤖 Calling Claude API for analysis...");
+      const response = await this.anthropic.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 16000,
+        temperature: 1,
+        system: systemPrompt,
+        messages: [
+          {
+            role: "user",
+            content: userMessage,
+          },
+        ],
+      });
+
+      // Extract text from response
+      const textContent = response.content
+        .filter((block) => block.type === "text")
+        .map((block) => (block as any).text)
+        .join("\n");
+
+      console.log("📝 Response received, parsing jobs...");
+
+      // Parse JSON array from response
+      const jsonMatch = textContent.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        console.error("❌ Failed to find JSON array in response");
+        console.error("Response:", textContent.substring(0, 500));
+        return [];
+      }
+
       const jobs: Job[] = JSON.parse(jsonMatch[0]);
       console.log(`✅ Generated ${jobs.length} jobs`);
       return jobs;
     } catch (e) {
-      console.error("❌ Failed to parse jobs JSON:", e);
+      console.error("❌ API call or parsing failed:", e);
       return [];
     }
+  }
+
+  async readCodebaseFromSprite(): Promise<string> {
+    if (!this.coordinatorSprite) throw new Error("Coordinator not initialized");
+
+    // List all files in the project
+    const result = await this.coordinatorSprite.execFile("find", [
+      CONFIG.projectPath,
+      "-type",
+      "f",
+      "-not",
+      "-path",
+      "*/node_modules/*",
+      "-not",
+      "-path",
+      "*/.git/*",
+    ]);
+
+    const files = result.stdout.toString().trim().split("\n").filter(Boolean);
+
+    let codebase = "";
+    for (const file of files) {
+      try {
+        const content = await this.coordinatorSprite.execFile("cat", [file]);
+        const relativePath = file.replace(CONFIG.projectPath + "/", "");
+        codebase += `\n\n## File: ${relativePath}\n\`\`\`\n${content.stdout.toString()}\n\`\`\`\n`;
+      } catch (e) {
+        // Skip files that can't be read
+      }
+    }
+
+    return codebase;
+  }
+
+  async listFilesInWorker(worker: Sprite): Promise<string[]> {
+    const result = await worker.execFile("find", [
+      CONFIG.projectPath,
+      "-type",
+      "f",
+      "-not",
+      "-path",
+      "*/node_modules/*",
+      "-not",
+      "-path",
+      "*/.git/*",
+    ]);
+
+    return result.stdout
+      .toString()
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((f) => f.replace(CONFIG.projectPath + "/", ""));
   }
 
   async writeJobFiles(jobs: Job[]) {
@@ -184,6 +241,7 @@ PROMPT_EOF`,
       const jobPath = `${CONFIG.jobsDir}/pending/${job.id}.json`;
       fs.writeFileSync(jobPath, JSON.stringify(job, null, 2));
       console.log(`📝 Created job: ${job.id} - ${job.title}`);
+      coordinatorEvents.emitJobCreated(job);
     }
   }
 
@@ -196,64 +254,124 @@ PROMPT_EOF`,
     const inProgressPath = `${CONFIG.jobsDir}/in-progress/${job.id}.json`;
     if (fs.existsSync(pendingPath)) {
       fs.renameSync(pendingPath, inProgressPath);
+      coordinatorEvents.emitJobStatus(job.id, 'in-progress');
     }
 
-    const worker = await this.client.createSprite(`worker-${job.id}`);
+    const worker = await this.client.createSprite(`worker-${job.id}-${Date.now()}`);
 
     try {
-      // Clone repo
-      await worker.execFile("git", [
-        "clone",
-        "--branch",
-        CONFIG.repoBranch,
-        CONFIG.repoUrl,
-        CONFIG.projectPath,
-      ]);
+      // Configure git
+      await worker.execFile("git", ["config", "--global", "user.name", "Sprite Builder"]);
+      await worker.execFile("git", ["config", "--global", "user.email", "sprite@emergentbuilder.dev"]);
+
+      // Set up GitHub authentication if token is available
+      const ghToken = process.env.GITHUB_TOKEN;
+      if (ghToken) {
+        // Configure git to use the GitHub token for HTTPS
+        const repoUrlWithAuth = CONFIG.repoUrl.replace(
+          "https://",
+          `https://x-access-token:${ghToken}@`
+        );
+        await worker.execFile("git", [
+          "clone",
+          "--branch",
+          CONFIG.repoBranch,
+          repoUrlWithAuth,
+          CONFIG.projectPath,
+        ]);
+      } else {
+        // Clone without authentication (will fail on push if repo is private)
+        await worker.execFile("git", [
+          "clone",
+          "--branch",
+          CONFIG.repoBranch,
+          CONFIG.repoUrl,
+          CONFIG.projectPath,
+        ]);
+      }
 
       // Create branch
       await worker.execFile("git", ["checkout", "-b", branchName], {
         cwd: CONFIG.projectPath,
       });
 
-      // Write job context
-      const jobPrompt = `
-You are a worker agent executing a specific improvement job.
+      // Read current codebase files
+      console.log(`  📖 Reading files for ${job.id}...`);
+      const filesToRead = job.files.length > 0 ? job.files : await this.listFilesInWorker(worker);
+      let codebaseContext = "";
 
-## Job Details
+      for (const file of filesToRead.slice(0, 10)) { // Limit to 10 files to avoid token overflow
+        try {
+          const fullPath = `${CONFIG.projectPath}/${file}`;
+          const content = await worker.execFile("cat", [fullPath]);
+          codebaseContext += `\n\n## File: ${file}\n\`\`\`\n${content.stdout.toString()}\n\`\`\`\n`;
+        } catch (e) {
+          // File might not exist yet or not readable
+        }
+      }
+
+      // Call Claude API to generate implementation
+      console.log(`  🤖 Generating implementation for ${job.id}...`);
+      const systemPrompt = `You are a code implementation agent. Generate bash commands to implement the requested changes.
+
+Output ONLY bash commands that can be executed to make the changes. Use heredocs for file writes.
+Do not include any explanations, only executable bash commands.
+
+Example output format:
+cat > path/to/file.js << 'EOF'
+// file contents here
+EOF
+
+cat > path/to/another.css << 'EOF'
+/* css here */
+EOF`;
+
+      const userPrompt = `## Job Details
 - ID: ${job.id}
 - Title: ${job.title}
 - Description: ${job.description}
-- Priority: ${job.priority}
 - Files to modify: ${job.files.join(", ")}
 
 ## Acceptance Criteria
 ${job.acceptanceCriteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}
 
-## Instructions
-1. Implement the changes described above
-2. Ensure all acceptance criteria are met
-3. Keep changes focused and minimal
-4. Test that the application still builds/runs
-5. Commit your changes with a descriptive message
+## Current Codebase
+${codebaseContext}
 
-Do not make changes outside the scope of this job.
-`;
+Generate bash commands to implement these changes. Output ONLY the bash commands, nothing else.`;
 
-      // Run Claude Code to execute the job
-      const cmd = worker.spawn(
-        "claude",
-        ["-p", jobPrompt, "--output-format", "text", "--max-turns", "20"],
-        { cwd: CONFIG.projectPath }
-      );
+      const response = await this.anthropic.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 8000,
+        temperature: 1,
+        system: systemPrompt,
+        messages: [
+          {
+            role: "user",
+            content: userPrompt,
+          },
+        ],
+      });
 
-      cmd.stdout.on("data", (chunk: Buffer) => process.stdout.write(chunk));
-      cmd.stderr.on("data", (chunk: Buffer) => process.stderr.write(chunk));
+      const bashScript = response.content
+        .filter((block) => block.type === "text")
+        .map((block) => (block as any).text)
+        .join("\n");
 
-      const exitCode = await cmd.wait();
+      console.log(`  ⚙️  Executing changes for ${job.id}...`);
 
-      if (exitCode !== 0) {
-        throw new Error(`Worker exited with code ${exitCode}`);
-      }
+      // Write and execute the bash script
+      await worker.execFile("bash", [
+        "-c",
+        `cat > /tmp/apply-changes-${job.id}.sh << 'SCRIPT_EOF'
+#!/bin/bash
+cd ${CONFIG.projectPath}
+${bashScript}
+SCRIPT_EOF
+chmod +x /tmp/apply-changes-${job.id}.sh`,
+      ]);
+
+      await worker.execFile("bash", [`/tmp/apply-changes-${job.id}.sh`]);
 
       // Commit and push
       await worker.execFile("git", ["add", "-A"], { cwd: CONFIG.projectPath });
@@ -270,6 +388,7 @@ Do not make changes outside the scope of this job.
       const completedPath = `${CONFIG.jobsDir}/completed/${job.id}.json`;
       if (fs.existsSync(inProgressPath)) {
         fs.renameSync(inProgressPath, completedPath);
+        coordinatorEvents.emitJobStatus(job.id, 'completed');
       }
 
       console.log(`✅ Worker ${job.id} completed successfully`);
@@ -281,6 +400,7 @@ Do not make changes outside the scope of this job.
       const failedPath = `${CONFIG.jobsDir}/failed/${job.id}.json`;
       if (fs.existsSync(inProgressPath)) {
         fs.renameSync(inProgressPath, failedPath);
+        coordinatorEvents.emitJobStatus(job.id, 'failed');
       }
 
       return { success: false, branch: branchName };
@@ -379,18 +499,27 @@ ${this.results
 
   async checkpoint(name: string) {
     if (!this.coordinatorSprite) return;
-    console.log(`💾 Creating checkpoint: ${name}`);
-    await this.coordinatorSprite.checkpoint(name);
+    // Checkpoint functionality not available in @fly/sprites v0.0.1
+    // Skipping checkpoint creation
+    if (typeof this.coordinatorSprite.checkpoint === 'function') {
+      console.log(`💾 Creating checkpoint: ${name}`);
+      await this.coordinatorSprite.checkpoint(name);
+    }
   }
 
   async restore(name: string) {
     if (!this.coordinatorSprite) return;
-    console.log(`⏪ Restoring checkpoint: ${name}`);
-    await this.coordinatorSprite.restore(name);
+    // Restore functionality not available in @fly/sprites v0.0.1
+    // Skipping checkpoint restore
+    if (typeof this.coordinatorSprite.restore === 'function') {
+      console.log(`⏪ Restoring checkpoint: ${name}`);
+      await this.coordinatorSprite.restore(name);
+    }
   }
 
   async runIteration(): Promise<boolean> {
     this.iteration++;
+    coordinatorEvents.emitIterationStart(this.iteration);
     console.log(`\n${"=".repeat(60)}`);
     console.log(`🔄 ITERATION ${this.iteration}`);
     console.log(`${"=".repeat(60)}`);
@@ -433,6 +562,8 @@ ${this.results
     console.log(`\n✅ Iteration ${this.iteration} complete`);
     console.log(`   Jobs completed: ${branches.length}`);
     console.log(`   Jobs failed: ${failed}`);
+
+    coordinatorEvents.emitIterationComplete(result);
 
     return this.iteration < CONFIG.maxIterations;
   }

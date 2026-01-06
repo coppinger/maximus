@@ -144,9 +144,53 @@ The loop stops when:
 - Coordinator generates no jobs (product is "done")
 - You manually interrupt (Ctrl+C)
 
+## Dashboard
+
+Maximus includes a real-time web dashboard for monitoring iteration progress.
+
+### Starting the Dashboard
+
+```bash
+npm run dashboard
+```
+
+The dashboard will be available at **http://localhost:3000**
+
+### Features
+
+- **Real-time updates**: Live WebSocket connection when coordinator is running
+- **Fallback mode**: Monitors file system when coordinator is stopped
+- **Job status tracking**: Visual kanban board showing pending, in-progress, completed, and failed jobs
+- **Progress visualization**: Overall progress bar with percentage
+- **Connection indicator**: Shows whether you're in live or fallback mode
+- **Responsive design**: Works on desktop and mobile
+
+### How It Works
+
+The dashboard operates in two modes:
+
+1. **Live Mode** (🟢): When the coordinator is running, the dashboard receives real-time updates via WebSocket
+2. **Fallback Mode** (🟠): When the coordinator is stopped, the dashboard monitors job files and updates within 1-2 seconds
+
+You can start the dashboard before or after the coordinator - it will automatically detect and switch modes.
+
+### Running Both
+
+To run the dashboard alongside the coordinator:
+
+```bash
+# Terminal 1: Start dashboard
+npm run dashboard
+
+# Terminal 2: Start coordinator
+npm run dev
+```
+
 ## Tips
 
 **Start small**: Run one iteration, review the results, adjust your PRODUCT_VISION.md if needed.
+
+**Use the dashboard**: Monitor your iterations in real-time at http://localhost:3000
 
 **Review jobs before execution**: Add `--dry-run` (not yet implemented) or pause after job generation to review what will be changed.
 
